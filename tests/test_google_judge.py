@@ -16,7 +16,7 @@ import pytest
 
 from swe_judge.tasks import Task
 
-GEMINI_INCOMPATIBLE_KEYS = {"additionalProperties", "$defs", "$ref"}
+GEMINI_INCOMPATIBLE_KEYS = {"additionalProperties", "$defs", "$ref", "minItems", "maxItems"}
 
 
 def _walk(node: Any) -> list[str]:
@@ -90,7 +90,11 @@ class TestGoogleJudgeSDKCall:
         self, sample_task: Task, mocker: pytest.MonkeyPatch
     ) -> None:
         """The strip must not be over-eager — type, properties, required,
-        enum, minimum/maximum/minItems/maxItems all stay."""
+        enum, minimum/maximum all stay. minItems/maxItems used to be on
+        this list but Gemini also rejects them; that array-length contract
+        is now enforced at parse time by the Pydantic JudgmentResult model
+        (which requires `scores: list[DimensionScore]` of exactly 3 entries
+        via the dimension-set check), not at the SDK boundary."""
         mocker.patch("google.generativeai.configure")
         mock_model_cls = mocker.patch("google.generativeai.GenerativeModel")
         mock_model = mock_model_cls.return_value
@@ -106,8 +110,6 @@ class TestGoogleJudgeSDKCall:
         assert "scores" in schema["properties"]
         scores = schema["properties"]["scores"]
         assert scores["type"] == "array"
-        assert scores["minItems"] == 3
-        assert scores["maxItems"] == 3
         item = scores["items"]
         assert item["properties"]["dimension"]["enum"] == [
             "correctness",

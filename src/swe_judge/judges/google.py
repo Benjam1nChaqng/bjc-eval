@@ -19,7 +19,13 @@ from swe_judge.tasks import DimensionScore, JudgmentResult, Task
 # it rejects these keys with `ValueError: Unknown field for Schema: <key>`
 # before the model ever runs. Anthropic and OpenAI accept them, so we
 # strip per-call here instead of mutating the shared JUDGE_TOOL_SCHEMA.
-_GEMINI_INCOMPATIBLE_KEYS: frozenset[str] = frozenset({"additionalProperties", "$defs", "$ref"})
+# Discovered incrementally during real-API smoke runs; the SDK reports
+# the first incompatible key it finds, so each round of stripping
+# exposes the next one. Sticking to the surgical set we've actually hit
+# rather than guessing at the full Gemini blacklist.
+_GEMINI_INCOMPATIBLE_KEYS: frozenset[str] = frozenset(
+    {"additionalProperties", "$defs", "$ref", "minItems", "maxItems"}
+)
 
 
 def _strip_gemini_incompatible_keys(node: Any) -> Any:
