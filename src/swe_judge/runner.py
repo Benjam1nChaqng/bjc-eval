@@ -13,22 +13,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Callable, NamedTuple
+from typing import Callable, NamedTuple, TextIO
 
 import ulid
 
-from swe_judge.judges.base import Judge, JudgeError
+from swe_judge.judges.base import Judge
 from swe_judge.tasks import JudgmentResult, Run, Score, Task
+
+_STDERR_ERROR_TRUNCATE = 200
 
 
 class JudgeFailure(NamedTuple):
-    """A non-fatal failure of one (task, judge) pair."""
+    """A non-fatal failure of one (task, judge) pair.
+
+    `error_type` is the original exception class name (e.g. ``"JudgeError"``,
+    ``"AuthenticationError"``, ``"ValueError"``). `error` is the exception's
+    message verbatim — no wrapping prefix — so the operator sees exactly
+    what the SDK raised.
+    """
 
     task_id: str
     judge_model: str
+    error_type: str
     error: str
 
 
@@ -58,6 +68,7 @@ def run_evaluation(
     max_workers: int = 6,
     on_progress: Callable[[str, str, JudgmentResult | JudgeFailure], None] | None = None,
     config: Mapping[str, object] | None = None,
+    failure_stream: TextIO | None = None,
 ) -> RunResult:
     """Run every judge against every task and produce a RunResult.
 
@@ -95,14 +106,14 @@ def run_evaluation(
     scores: list[Score] = []
     failures: list[JudgeFailure] = []
 
-    def _one_pair(task: Task, judge: Judge) -> tuple[Task, Judge, JudgmentResult | JudgeError]:
+    def _one_pair(
+        task: Task, judge: Judge
+    ) -> tuple[Task, Judge, JudgmentResult | tuple[str, str]]:
         try:
             result = judge.judge(task, model_outputs[task.id])
             return task, judge, result
-        except JudgeError as e:
-            return task, judge, e
         except Exception as e:  # noqa: BLE001
-            return task, judge, JudgeError(f"Unexpected error: {e}")
+            return task, judge, (type(e).__name__, str(e))
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(_one_pair, t, j) for t, j in pairs]
@@ -114,10 +125,45 @@ def run_evaluation(
                 if on_progress:
                     on_progress(task.id, judge.model_name, outcome)
             else:
-                f = JudgeFailure(task_id=task.id, judge_model=judge.model_name, error=str(outcome))
+                error_type, error_msg = outcome
+                f = JudgeFailure(
+                    task_id=task.id,
+                    judge_model=judge.model_name,
+                    error_type=error_type,
+                    error=error_msg,
+                )
                 failures.append(f)
                 if on_progress:
                     on_progress(task.id, judge.model_name, f)
 
     run = run.model_copy(update={"completed_at": datetime.now(timezone.utc)})
+
+    if failures:
+        stream = failure_stream if failure_stream is not None else sys.stderr
+        seen: set[tuple[str, str, str]] = set()
+        stream.write(f"\n{len(failures)} judge failure(s):\n")
+        for f in failures:
+            truncated = f.error if len(f.error) <= _STDERR_ERROR_TRUNCATE else (
+                f.error[:_STDERR_ERROR_TRUNCATE] + "…"
+            )
+            key = (f.judge_model, f.error_type, truncated)
+            if key in seen:
+                continue
+            seen.add(key)
+            count = sum(
+                1
+                for x in failures
+                if x.judge_model == f.judge_model
+                and x.error_type == f.error_type
+                and (
+                    x.error
+                    if len(x.error) <= _STDERR_ERROR_TRUNCATE
+                    else x.error[:_STDERR_ERROR_TRUNCATE] + "…"
+                )
+                == truncated
+            )
+            suffix = f" (×{count})" if count > 1 else ""
+            stream.write(f"  [{f.judge_model}] {f.error_type}: {truncated}{suffix}\n")
+        stream.flush()
+
     return RunResult(run=run, scores=scores, failures=failures)

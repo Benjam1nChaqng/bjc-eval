@@ -11,8 +11,11 @@ import json
 from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+
+load_dotenv()
 
 from swe_judge.judges.mock import MockJudge
 from swe_judge.reliability import summary

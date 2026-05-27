@@ -19,6 +19,17 @@ class _FailingJudge:
         raise JudgeError("synthetic failure for tests")
 
 
+class _CrashingJudge:
+    """Raises a non-JudgeError exception — exercises the catch-all branch."""
+
+    @property
+    def model_name(self) -> str:
+        return "crashes-always"
+
+    def judge(self, task: Task, model_output: str) -> JudgmentResult:  # noqa: ARG002
+        raise ValueError("auth scope wrong: 401 Unauthorized")
+
+
 class TestRunner:
     def test_dataset_version_is_deterministic(self, sample_tasks: list[Task]) -> None:
         v1 = compute_dataset_version(sample_tasks)
@@ -81,6 +92,70 @@ class TestRunner:
         assert len(result.scores) == 9
         assert len(result.failures) == 3
         assert all(f.judge_model == "fails-always" for f in result.failures)
+
+    def test_failure_records_exception_type_and_message(
+        self, sample_tasks: list[Task]
+    ) -> None:
+        """A JudgeError must land in the failure record with both class and message."""
+        judges = [_FailingJudge()]
+        outputs = {t.id: "any" for t in sample_tasks}
+
+        result = run_evaluation(
+            tasks=sample_tasks,
+            judges=judges,
+            model_outputs=outputs,
+            model_under_test="X",
+        )
+
+        assert len(result.failures) == len(sample_tasks)
+        f = result.failures[0]
+        assert f.error_type == "JudgeError"
+        assert "synthetic failure for tests" in f.error
+
+    def test_failure_preserves_arbitrary_exception_class(
+        self, sample_tasks: list[Task]
+    ) -> None:
+        """A non-JudgeError exception must keep its original class name in the record."""
+        judges = [_CrashingJudge()]
+        outputs = {t.id: "any" for t in sample_tasks}
+
+        result = run_evaluation(
+            tasks=sample_tasks,
+            judges=judges,
+            model_outputs=outputs,
+            model_under_test="X",
+        )
+
+        assert len(result.failures) == len(sample_tasks)
+        f = result.failures[0]
+        assert f.error_type == "ValueError"
+        assert "auth scope wrong" in f.error
+        # No "Unexpected error:" wrapping prefix — the original message
+        # is the source of truth.
+        assert not f.error.startswith("Unexpected error:")
+
+    def test_runner_writes_failure_summary_to_stderr(
+        self, sample_tasks: list[Task], capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When the run finishes with failures, the runner emits one stderr line
+        per (judge_model, error_type, truncated message) — so a CLI user sees
+        why their judges failed without having to read the SQLite DB."""
+        judges = [MockJudge(model_name="ok"), _CrashingJudge()]
+        outputs = {t.id: "any" for t in sample_tasks}
+
+        run_evaluation(
+            tasks=sample_tasks,
+            judges=judges,
+            model_outputs=outputs,
+            model_under_test="X",
+        )
+
+        captured = capsys.readouterr()
+        assert "crashes-always" in captured.err
+        assert "ValueError" in captured.err
+        assert "auth scope wrong" in captured.err
+        # Successful judge should not be mentioned in the failure summary.
+        assert "MockJudge" not in captured.err or "ok" not in captured.err.split("\n")[0]
 
     def test_progress_callback_invoked(
         self, sample_tasks: list[Task]
