@@ -8,11 +8,31 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Any
 
 from swe_judge.judges.anthropic import JUDGE_TOOL_SCHEMA, TOOL_NAME
 from swe_judge.judges.base import JudgeError
 from swe_judge.prompts import build_system_prompt, build_user_message
 from swe_judge.tasks import DimensionScore, JudgmentResult, Task
+
+# Gemini's function-declaration schema is a strict subset of JSON Schema —
+# it rejects these keys with `ValueError: Unknown field for Schema: <key>`
+# before the model ever runs. Anthropic and OpenAI accept them, so we
+# strip per-call here instead of mutating the shared JUDGE_TOOL_SCHEMA.
+_GEMINI_INCOMPATIBLE_KEYS: frozenset[str] = frozenset({"additionalProperties", "$defs", "$ref"})
+
+
+def _strip_gemini_incompatible_keys(node: Any) -> Any:
+    """Return a deep copy of `node` with Gemini-incompatible keys removed."""
+    if isinstance(node, dict):
+        return {
+            k: _strip_gemini_incompatible_keys(v)
+            for k, v in node.items()
+            if k not in _GEMINI_INCOMPATIBLE_KEYS
+        }
+    if isinstance(node, list):
+        return [_strip_gemini_incompatible_keys(item) for item in node]
+    return node
 
 
 class GoogleJudge:
@@ -41,6 +61,7 @@ class GoogleJudge:
         return self._model
 
     def judge(self, task: Task, model_output: str) -> JudgmentResult:
+        gemini_schema = _strip_gemini_incompatible_keys(JUDGE_TOOL_SCHEMA)
         model = self._genai.GenerativeModel(
             model_name=self._model,
             system_instruction=build_system_prompt(),
@@ -50,7 +71,7 @@ class GoogleJudge:
                         {
                             "name": TOOL_NAME,
                             "description": "Submit the 3 rubric scores for this model output.",
-                            "parameters": JUDGE_TOOL_SCHEMA,
+                            "parameters": gemini_schema,
                         }
                     ]
                 }
