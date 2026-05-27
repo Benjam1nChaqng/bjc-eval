@@ -14,6 +14,11 @@ Versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Hugging Face dataset publish workflow
 - GitHub Actions CI gate: block PR if κ regresses > 0.05
 
+## [0.1.1] — 2026-05-15
+
+### Fixed
+- Declared `pandas>=2.0` as an explicit dependency. `simpledorff` (Krippendorff's α library) requires pandas internally, and `reliability.py` also imports it directly inside the Krippendorff helper. Without this declaration, fresh installs failed 7 reliability tests with `ModuleNotFoundError: No module named 'pandas'`.
+
 ## [0.1.0] — 2026-05-15
 
 Initial scaffold of the multi-judge eval harness.
