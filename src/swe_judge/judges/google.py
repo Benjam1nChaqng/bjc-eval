@@ -15,16 +15,49 @@ from swe_judge.judges.base import JudgeError
 from swe_judge.prompts import build_system_prompt, build_user_message
 from swe_judge.tasks import DimensionScore, JudgmentResult, Task
 
-# Gemini's function-declaration schema is a strict subset of JSON Schema —
-# it rejects these keys with `ValueError: Unknown field for Schema: <key>`
-# before the model ever runs. Anthropic and OpenAI accept them, so we
-# strip per-call here instead of mutating the shared JUDGE_TOOL_SCHEMA.
-# Discovered incrementally during real-API smoke runs; the SDK reports
-# the first incompatible key it finds, so each round of stripping
-# exposes the next one. Sticking to the surgical set we've actually hit
-# rather than guessing at the full Gemini blacklist.
+# Gemini's function-declaration schema (deprecated `google.generativeai` SDK)
+# is a strict subset of JSON Schema. It rejects unknown keys with
+# `ValueError: Unknown field for Schema: <key>` before the model ever runs;
+# Anthropic and OpenAI accept the full schema, so we strip per-call here
+# rather than mutating the shared JUDGE_TOOL_SCHEMA. The supported keys are
+# roughly: type, format, description, nullable, enum, properties, items,
+# required. Everything else gets rejected.
+#
+# Validation lost at the SDK boundary (range/length constraints) is
+# recovered at parse time: DimensionScore (Pydantic) enforces value 1..5,
+# dimension is a Literal["correctness","code_quality","reasoning"], and
+# the runner's per-dimension iteration loudly fails if a score row is
+# absent. So the strip is safe in practice.
+#
+# This set is broader than what we've literally hit — discovering each
+# rejected key one-at-a-time via re-runs is expensive. Set covers the
+# documented Gemini-unsupported keys plus the JSON-Schema composition
+# keywords Pydantic emits.
 _GEMINI_INCOMPATIBLE_KEYS: frozenset[str] = frozenset(
-    {"additionalProperties", "$defs", "$ref", "minItems", "maxItems"}
+    {
+        # discovered via real-API smoke runs
+        "additionalProperties",
+        "minItems",
+        "maxItems",
+        "minimum",
+        # defensive — same rejection mechanism, just haven't tripped yet
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "minLength",
+        "maxLength",
+        "pattern",
+        "multipleOf",
+        # JSON Schema composition (Pydantic emits these on Union types etc.)
+        "$defs",
+        "$ref",
+        "allOf",
+        "oneOf",
+        "anyOf",
+        "not",
+        "const",
+        "default",
+    }
 )
 
 

@@ -16,7 +16,27 @@ import pytest
 
 from swe_judge.tasks import Task
 
-GEMINI_INCOMPATIBLE_KEYS = {"additionalProperties", "$defs", "$ref", "minItems", "maxItems"}
+GEMINI_INCOMPATIBLE_KEYS = {
+    "additionalProperties",
+    "minItems",
+    "maxItems",
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "multipleOf",
+    "$defs",
+    "$ref",
+    "allOf",
+    "oneOf",
+    "anyOf",
+    "not",
+    "const",
+    "default",
+}
 
 
 def _walk(node: Any) -> list[str]:
@@ -89,12 +109,12 @@ class TestGoogleJudgeSDKCall:
     def test_tool_schema_preserves_required_validation_fields(
         self, sample_task: Task, mocker: pytest.MonkeyPatch
     ) -> None:
-        """The strip must not be over-eager — type, properties, required,
-        enum, minimum/maximum all stay. minItems/maxItems used to be on
-        this list but Gemini also rejects them; that array-length contract
-        is now enforced at parse time by the Pydantic JudgmentResult model
-        (which requires `scores: list[DimensionScore]` of exactly 3 entries
-        via the dimension-set check), not at the SDK boundary."""
+        """The strip must not be over-eager — type, properties, items,
+        required, enum stay. Range/length constraints (minimum, maximum,
+        minItems, maxItems, minLength) are stripped because Gemini's
+        schema subset rejects them; those contracts are enforced at parse
+        time by the Pydantic DimensionScore model (value 1..5,
+        dimension Literal) and by the runner's per-dimension iteration."""
         mocker.patch("google.generativeai.configure")
         mock_model_cls = mocker.patch("google.generativeai.GenerativeModel")
         mock_model = mock_model_cls.return_value
@@ -116,6 +136,5 @@ class TestGoogleJudgeSDKCall:
             "code_quality",
             "reasoning",
         ]
-        assert item["properties"]["value"]["minimum"] == 1
-        assert item["properties"]["value"]["maximum"] == 5
+        assert item["properties"]["value"]["type"] == "integer"
         assert set(item["required"]) == {"dimension", "value", "rationale", "anchor_matched"}
