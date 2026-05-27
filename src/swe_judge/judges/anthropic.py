@@ -61,7 +61,6 @@ class AnthropicJudge:
         model: str = "claude-opus-4-7",
         api_key: str | None = None,
         max_tokens: int = 2048,
-        temperature: float = 0.0,
     ) -> None:
         # Lazy import keeps tests/CI fast for users who don't have Anthropic installed.
         from anthropic import Anthropic  # type: ignore[import-not-found]
@@ -69,7 +68,6 @@ class AnthropicJudge:
         self._model = model
         self._client = Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
         self._max_tokens = max_tokens
-        self._temperature = temperature
 
     @property
     def model_name(self) -> str:
@@ -80,7 +78,6 @@ class AnthropicJudge:
             response = self._client.messages.create(
                 model=self._model,
                 max_tokens=self._max_tokens,
-                temperature=self._temperature,
                 system=build_system_prompt(),
                 messages=[{"role": "user", "content": build_user_message(task, model_output)}],
                 tools=[
