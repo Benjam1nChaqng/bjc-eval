@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bjc-trader"
+version = "0.1.0"
+description = "A safe, human-gated stock trading bot with paper auto-execution and backtesting."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Benjamin Chang" }]
+dependencies = [
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "rich>=13.7",
+    "python-dotenv>=1.0",
+    "pandas>=2.2",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Broker + live/real data. Kept optional so the test suite runs without them.
+broker = ["alpaca-py>=0.21"]
+data = ["yfinance>=0.2.40"]
+backtest = ["backtesting>=0.3.3"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "freezegun>=1.5",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+bjc = "bjc_trader.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+# B008: typer.Option() in argument defaults is the intended Typer pattern.
+# UP042: `str, Enum` is fine and slightly more portable than StrEnum here.
+ignore = ["B008", "UP042"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+# Typer's command decorators are untyped — this is the standard exception for Typer apps.
+disallow_untyped_decorators = false
+# Some deps resolve as Any in this environment; allow subclassing them (e.g. BaseSettings).
+disallow_subclassing_any = false
+
+# These third-party libs ship without stubs mypy can resolve here.
+[[tool.mypy.overrides]]
+module = [
+    "alpaca.*", "yfinance.*", "backtesting.*", "pandas.*",
+    "rich.*", "typer.*", "pydantic.*", "pydantic_settings.*",
+]
+ignore_missing_imports = true

@@ -1,0 +1,23 @@
+# Secrets — NEVER commit
+.env
+.env.local
+*.key
+
+# Databases / data
+*.db
+*.sqlite
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
