@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Migrate the Gemini judge to `google-genai` 1.x with an isolated client,
+  forced `submit_scores`, and automatic function execution disabled.
+- Preserve the shared rubric/prompt and legacy schema compatibility filter;
+  handle text before function calls and wrap invalid responses in `JudgeError`.
+- Replace legacy SDK mocks with new-client contract and error-path tests using
+  real Gen AI SDK types. Document API-free versus live-model verification.
+
+
 All notable changes to swe-judge are documented in this file.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).

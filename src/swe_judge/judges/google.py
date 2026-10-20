@@ -1,6 +1,6 @@
 """Google judge — Gemini 3 Pro via function calling.
 
-Third member of the v0.1 ensemble. Uses Google's generative-ai SDK with
+Third member of the v0.1 ensemble. Uses Google's Gen AI SDK with
 the same schema as the Anthropic and OpenAI judges.
 """
 
@@ -15,24 +15,12 @@ from swe_judge.judges.base import JudgeError
 from swe_judge.prompts import build_system_prompt, build_user_message
 from swe_judge.tasks import DimensionScore, JudgmentResult, Task
 
-# Gemini's function-declaration schema (deprecated `google.generativeai` SDK)
-# is a strict subset of JSON Schema. It rejects unknown keys with
-# `ValueError: Unknown field for Schema: <key>` before the model ever runs;
-# Anthropic and OpenAI accept the full schema, so we strip per-call here
-# rather than mutating the shared JUDGE_TOOL_SCHEMA. The supported keys are
-# roughly: type, format, description, nullable, enum, properties, items,
-# required. Everything else gets rejected.
-#
-# Validation lost at the SDK boundary (range/length constraints) is
-# recovered at parse time: DimensionScore (Pydantic) enforces value 1..5,
-# dimension is a Literal["correctness","code_quality","reasoning"], and
-# the runner's per-dimension iteration loudly fails if a score row is
-# absent. So the strip is safe in practice.
-#
-# This set is broader than what we've literally hit — discovering each
-# rejected key one-at-a-time via re-runs is expensive. Set covers the
-# documented Gemini-unsupported keys plus the JSON-Schema composition
-# keywords Pydantic emits.
+# Retain the legacy function-schema compatibility filter during SDK migration.
+# google.genai.types.Schema accepts more constraints than the old protobuf Schema,
+# but local SDK acceptance does not prove backend/model support. Keep the wire
+# contract unchanged until real Gemini runs justify relaxing individual keys.
+# The shared schema is never mutated; DimensionScore still enforces score range,
+# dimension literals, nonempty text, and forbidden extra score fields at parse time.
 _GEMINI_INCOMPATIBLE_KEYS: frozenset[str] = frozenset(
     {
         # discovered via real-API smoke runs
@@ -77,9 +65,8 @@ def _strip_gemini_incompatible_keys(node: Any) -> Any:
 class GoogleJudge:
     """Gemini as a rubric judge.
 
-    Note: Google's function-calling schema is JSON Schema with a few quirks
-    (no `additionalProperties: false` in some SDK versions). We use the
-    shared JUDGE_TOOL_SCHEMA and let the SDK adapt.
+    Uses the shared prompt and a compatibility-filtered copy of the shared
+    tool schema. Function calls are returned for validation, never executed.
     """
 
     def __init__(
@@ -88,10 +75,11 @@ class GoogleJudge:
         api_key: str | None = None,
         temperature: float = 0.0,
     ) -> None:
-        import google.generativeai as genai  # type: ignore[import-not-found]
+        from google import genai
+        from google.genai import types
 
-        genai.configure(api_key=api_key or os.environ.get("GOOGLE_API_KEY"))
-        self._genai = genai
+        self._client = genai.Client(api_key=api_key or os.environ.get("GOOGLE_API_KEY"))
+        self._types = types
         self._model = model
         self._temperature = temperature
 
@@ -100,49 +88,67 @@ class GoogleJudge:
         return self._model
 
     def judge(self, task: Task, model_output: str) -> JudgmentResult:
-        gemini_schema = _strip_gemini_incompatible_keys(JUDGE_TOOL_SCHEMA)
-        model = self._genai.GenerativeModel(
-            model_name=self._model,
-            system_instruction=build_system_prompt(),
-            tools=[
-                {
-                    "function_declarations": [
-                        {
-                            "name": TOOL_NAME,
-                            "description": "Submit the 3 rubric scores for this model output.",
-                            "parameters": gemini_schema,
-                        }
-                    ]
-                }
-            ],
-        )
-
         try:
-            response = model.generate_content(
-                build_user_message(task, model_output),
-                generation_config={"temperature": self._temperature},
-                tool_config={"function_calling_config": {"mode": "ANY"}},
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=build_user_message(task, model_output),
+                config=self._types.GenerateContentConfig(
+                    system_instruction=build_system_prompt(),
+                    temperature=self._temperature,
+                    tools=[
+                        self._types.Tool(
+                            function_declarations=[
+                                self._types.FunctionDeclaration(
+                                    name=TOOL_NAME,
+                                    description="Submit the 3 rubric scores for this model output.",
+                                    parameters=_strip_gemini_incompatible_keys(JUDGE_TOOL_SCHEMA),
+                                )
+                            ]
+                        )
+                    ],
+                    tool_config=self._types.ToolConfig(
+                        function_calling_config=self._types.FunctionCallingConfig(
+                            mode=self._types.FunctionCallingConfigMode.ANY,
+                            allowed_function_names=[TOOL_NAME],
+                        )
+                    ),
+                    automatic_function_calling=self._types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
+                ),
             )
         except Exception as e:  # noqa: BLE001
             raise JudgeError(f"Google API call failed: {e}") from e
 
         try:
-            function_call = response.candidates[0].content.parts[0].function_call
-        except (AttributeError, IndexError) as e:
+            # Text/thought parts can precede the call. Only inspect the first
+            # candidate, matching the other judges' single-result contract.
+            if not response.candidates or response.candidates[0].content is None:
+                raise JudgeError("Google response shape unexpected: missing candidate content")
+            parts = response.candidates[0].content.parts
+            function_call = next(
+                (
+                    part.function_call
+                    for part in (parts or [])
+                    if part.function_call and part.function_call.name == TOOL_NAME
+                ),
+                None,
+            )
+        except (AttributeError, IndexError, TypeError) as e:
             raise JudgeError(f"Google response shape unexpected: {e}") from e
 
         if not function_call or function_call.name != TOOL_NAME:
-            raise JudgeError(
-                f"Google response did not contain '{TOOL_NAME}' function call"
-            )
+            raise JudgeError(f"Google response did not contain '{TOOL_NAME}' function call")
 
-        # Gemini returns function_call.args as a proto Mapping — coerce to dict
+        # The new SDK returns a dict; retain coercion and the JudgeError boundary.
         try:
+            if function_call.args is None:
+                raise ValueError("missing function arguments")
             args = dict(function_call.args)
         except Exception as e:  # noqa: BLE001
             raise JudgeError(f"Could not coerce Google function_call.args: {e}") from e
 
-        # Gemini sometimes nests scores under a Struct — handle both shapes
+        # Retain compatibility with scores encoded as a JSON string.
         if "scores" not in args:
             raise JudgeError(f"Google function_call missing 'scores' key: {args!r}")
 
@@ -155,11 +161,10 @@ class GoogleJudge:
 
         try:
             scores = [DimensionScore(**dict(s)) for s in scores_raw]
+            return JudgmentResult(
+                task_id=task.id,
+                judge_model=self._model,
+                scores=scores,
+            )
         except Exception as e:  # noqa: BLE001
             raise JudgeError(f"Could not parse scores from Google function_call: {e}") from e
-
-        return JudgmentResult(
-            task_id=task.id,
-            judge_model=self._model,
-            scores=scores,
-        )
