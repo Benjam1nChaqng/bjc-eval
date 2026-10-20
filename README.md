@@ -68,6 +68,65 @@ export OPENAI_API_KEY=sk-...
 export GOOGLE_API_KEY=...
 ```
 
+### Gemini SDK and verification
+
+The Google judge uses [`google-genai`](https://github.com/googleapis/python-genai)
+(`from google import genai`), replacing the retired `google-generativeai` SDK.
+The SDK is restricted to the tested 1.x API family. Client creation is lazy and
+uses an explicit `api_key` first, then `GOOGLE_API_KEY`; the SDK also supports
+`GEMINI_API_KEY` when no key is passed. Keep credentials in your environment or
+an untracked `.env` file, never in source or test fixtures.
+
+The shared rubric, prompts, model default, and temperature are unchanged.
+`client.models.generate_content` forces `submit_scores` with `ANY` mode and
+automatic function execution disabled. The parser finds the score call even
+when text parts precede it, and retains `JudgeError` wrapping and Pydantic
+validation. The legacy schema filter is deliberately retained: the new SDK's
+local acceptance of more schema fields does not establish backend support.
+Relaxing it requires separate real-model evidence; the shared schema is never
+modified.
+
+Run API-free checks with:
+
+```bash
+pytest tests/ --no-cov
+ruff check src/swe_judge/judges/google.py tests/test_google_judge.py
+```
+
+These tests use actual SDK request/response types with a mocked client. Passing
+them does **not** verify real Gemini scores or inter-rater reliability. To verify
+one real response with a securely configured key and an available Gemini model:
+
+```bash
+# Set GEMINI_JUDGE_MODEL to a model available to your account, if needed.
+python - <<'PYCODE'
+import json
+import os
+from pathlib import Path
+from swe_judge.judges.google import GoogleJudge
+from swe_judge.tasks import Task
+
+task = Task.model_validate(json.loads(Path("data/golden_seed.jsonl").read_text().splitlines()[0]))
+judge = GoogleJudge(model=os.environ.get("GEMINI_JUDGE_MODEL", "gemini-3-pro"))
+result = judge.judge(task, task.reference_solution)
+assert {s.dimension for s in result.scores} == {"correctness", "code_quality", "reasoning"}
+assert len(result.scores) == 3
+print(result.model_dump_json(indent=2))
+PYCODE
+```
+
+Migration verification (October 20, 2026, Python 3.12): all 99 tests pass with
+`google-genai==1.75.0` and the legacy SDK uninstalled; all 43 Google contract tests
+also pass with `google-genai==1.0.0`. Focused Ruff and mypy checks, CLI help, and
+the mock evaluation pipeline pass. Repository-wide Ruff still reports 33
+pre-existing findings outside the changed files (34 on the original checkout).
+No API credentials were available, so no live Gemini response or new κ/α run
+was verified.
+
+This sends one paid request using a public seed task. Record the SDK version,
+model, and result separately from mocked-test results; a single response does
+not establish ensemble κ or α.
+
 ## Usage
 
 ### Run an evaluation
